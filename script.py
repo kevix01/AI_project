@@ -21,7 +21,9 @@ class SimpleMLP(nn.Module):
     def __init__(self, hidden_size: int) -> None:
         super(SimpleMLP, self).__init__()
         self.hidden = nn.Linear(1, hidden_size)
-        self.output = nn.Linear(hidden_size, 1)
+        self.hidden2 = nn.Linear(hidden_size, 100)
+        self.hidden3 = nn.Linear(100, 70)
+        self.output = nn.Linear(70, 1)
         self.reinitialize_weights()
         logger.info(f"Initialized SimpleMLP with hidden_size={hidden_size}")
 
@@ -32,6 +34,8 @@ class SimpleMLP(nn.Module):
             x = torch.tensor(x, dtype=torch.float32).view(-1, 1)
 
         x = torch.relu(self.hidden(x))
+        x = torch.relu(self.hidden2(x))
+        x = torch.relu(self.hidden3(x))
         x = torch.sigmoid(self.output(x))
         return x.item() if x.numel() == 1 else x
 
@@ -398,7 +402,7 @@ def main() -> None:
     logger.info(f"Generated {len(L)} uniform samples between 0 and 1")
     
     # Initialize models
-    mlp = SimpleMLP(hidden_size=9)
+    mlp = SimpleMLP(hidden_size=60)
     mlp2 = TrainableMLP(input_size=len(L), hidden_size=3)
     
     # Generate training data
@@ -435,15 +439,27 @@ def main() -> None:
     
     # Final evaluation
     L1: List[float] = []
+    mlp.reinitialize_weights()
     for el in L:
         output = mlp.forward(el)
         L1.append(output.item() if isinstance(output, torch.Tensor) else output)
-    target = trapezoidal_integral(L, L1)
-    final_loss = mlp2.validate_model([L1], [target])
-    logger.info(f"Final evaluation on new data - Loss: {final_loss:.6f}")
+    
+    L2: List[float] = []
+    mlp.reinitialize_weights()
+    for el in L:
+        output = mlp.forward(el)
+        L2.append(output.item() if isinstance(output, torch.Tensor) else output)
+    target1 = trapezoidal_integral(L, L1)
+    final_loss1 = mlp2.validate_model([L1], [target1])
+
+    target2 = trapezoidal_integral(L, L2)
+    final_loss2 = mlp2.validate_model([L2], [target2])
+    logger.info(f"Final evaluation on test data 1 - Loss: {final_loss1:.6f}")
+    logger.info(f"Final evaluation on test data 2 - Loss: {final_loss2:.6f}")
     
     # Plot results
-    plot_function(L, L1, title="MLP Output Function")
+    plot_function(L, L1, title="MLP1 Output Function")
+    plot_function(L,L2, title="MLP2 Output Function")
     
 
 if __name__ == "__main__":

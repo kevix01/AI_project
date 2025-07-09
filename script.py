@@ -142,7 +142,7 @@ class TrainableMLP(nn.Module):
             
             # Validation phase
             if val_inputs is not None and val_targets is not None:
-                val_loss = self.validate_model(val_inputs, val_targets)
+                val_loss, est_integral = self.validate_model(val_inputs, val_targets)
                 val_loss_history.append(val_loss)
                 if verbose and (epoch+1) % 10 == 0:
                     logger.info(
@@ -167,7 +167,7 @@ class TrainableMLP(nn.Module):
             targets_tensor = torch.tensor(val_targets, dtype=torch.float32).view(-1, 1)
             outputs = self.forward(inputs_tensor)
             loss = nn.MSELoss()(outputs, targets_tensor)
-        return loss.item()
+        return loss.item(), outputs
 
 def sample_uniform(n: int) -> List[float]:
     """Generate n uniformly distributed samples between 0 and 1, sorted ascending."""
@@ -450,16 +450,16 @@ def main() -> None:
         output = mlp.forward(el)
         L2.append(output.item() if isinstance(output, torch.Tensor) else output)
     target1 = trapezoidal_integral(L, L1)
-    final_loss1 = mlp2.validate_model([L1], [target1])
+    final_loss1, estimated_integral1 = mlp2.validate_model([L1], [target1])
 
     target2 = trapezoidal_integral(L, L2)
-    final_loss2 = mlp2.validate_model([L2], [target2])
-    logger.info(f"Final evaluation on test data 1 - Loss: {final_loss1:.6f}")
-    logger.info(f"Final evaluation on test data 2 - Loss: {final_loss2:.6f}")
-    
+    final_loss2, estimated_integral2 = mlp2.validate_model([L2], [target2])
+    logger.info(f"Final evaluation on test data 1 - Numeric integral: {target1} - Estimated integral: {estimated_integral1.item()} - Loss: {final_loss1:.6f}")
+    logger.info(f"Final evaluation on test data 2 - Numeric integral: {target2} - Estimated integral: {estimated_integral2.item()} - Loss: {final_loss2:.6f}")
+
     # Plot results
     plot_function(L, L1, title="MLP1 Output Function")
-    plot_function(L,L2, title="MLP2 Output Function")
+    plot_function(L, L2, title="MLP2 Output Function")
     
 
 if __name__ == "__main__":

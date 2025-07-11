@@ -18,14 +18,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class SimpleMLP(nn.Module):
-    def __init__(self, hidden_size: int) -> None:
+    def __init__(self, hidden_size1: int, hidden_size2: int, hidden_size3: int) -> None:
         super(SimpleMLP, self).__init__()
-        self.hidden = nn.Linear(1, hidden_size)
-        self.hidden2 = nn.Linear(hidden_size, 100)
-        self.hidden3 = nn.Linear(100, 70)
-        self.output = nn.Linear(70, 1)
+        self.hidden1 = nn.Linear(1, hidden_size1)
+        self.hidden2 = nn.Linear(hidden_size1, hidden_size2)
+        self.hidden3 = nn.Linear(hidden_size2, hidden_size3)
+        self.output = nn.Linear(hidden_size3, 1)
         self.reinitialize_weights()
-        logger.info(f"Initialized SimpleMLP with hidden_size={hidden_size}")
+        logger.info(f"Initialized SimpleMLP with hidden_size1={hidden_size1}, hidden_size2={hidden_size2}, hidden_size3={hidden_size3}")
 
     def forward(self, x: Union[float, int, List[float], torch.Tensor]) -> Union[float, torch.Tensor]:
         if isinstance(x, (int, float)):
@@ -33,32 +33,32 @@ class SimpleMLP(nn.Module):
         elif isinstance(x, list):
             x = torch.tensor(x, dtype=torch.float32).view(-1, 1)
 
-        x = torch.relu(self.hidden(x))
+        x = torch.relu(self.hidden1(x))
         x = torch.relu(self.hidden2(x))
         x = torch.relu(self.hidden3(x))
         x = torch.sigmoid(self.output(x))
         return x.item() if x.numel() == 1 else x
 
     def reinitialize_weights(self) -> None:
-        for name, layer in [('hidden', self.hidden), ('output', self.output)]:
+        for name, layer in [('hidden1', self.hidden1), ('output', self.output)]:
             nn.init.normal_(layer.weight, mean=0, std=1)
             nn.init.uniform_(layer.bias, -1.0, 1.0)
             logger.debug(f"Reinitialized weights for layer {name}")
 
 class TrainableMLP(nn.Module):
-    def __init__(self, input_size: int, hidden_size: int) -> None:
+    def __init__(self, input_size: int, hidden_size1: int) -> None:
         super(TrainableMLP, self).__init__()
-        self.hidden = nn.Linear(input_size, hidden_size)
-        self.output = nn.Linear(hidden_size, 1)
+        self.hidden1 = nn.Linear(input_size, hidden_size1)
+        self.output = nn.Linear(hidden_size1, 1)
         self.reinitialize_weights()
-        logger.info(f"Initialized TrainableMLP with input_size={input_size}, hidden_size={hidden_size}")
+        logger.info(f"Initialized TrainableMLP with input_size={input_size}, hidden_size1={hidden_size1}")
 
     def forward(self, x: Union[float, int, List[float], torch.Tensor]) -> torch.Tensor | List[float] | float:
         if isinstance(x, list):
             x = torch.tensor(x, dtype=torch.float32).view(1, -1)
         elif isinstance(x, (int, float)):
             x = torch.tensor([[x]], dtype=torch.float32)
-        x = torch.sigmoid(self.hidden(x))
+        x = torch.sigmoid(self.hidden1(x))
         x = self.output(x)  # Removed activation for regression
         return x
 
@@ -72,7 +72,7 @@ class TrainableMLP(nn.Module):
             torch.manual_seed(seed)
             
             try:
-                for name, layer in [('hidden', self.hidden), ('output', self.output)]:
+                for name, layer in [('hidden1', self.hidden1), ('output', self.output)]:
                     nn.init.uniform_(layer.weight, -1.0, 1.0)
                     nn.init.uniform_(layer.bias, -1.0, 1.0)
                     logger.debug(f"Reinitialized weights for layer {name} (seed={seed})")
@@ -81,7 +81,7 @@ class TrainableMLP(nn.Module):
                 torch.random.set_rng_state(original_state)
         else:
             # No seed provided - just do normal initialization
-            for name, layer in [('hidden', self.hidden), ('output', self.output)]:
+            for name, layer in [('hidden1', self.hidden1), ('output', self.output)]:
                 nn.init.uniform_(layer.weight, -1.0, 1.0)
                 nn.init.uniform_(layer.bias, -1.0, 1.0)
 
@@ -236,7 +236,7 @@ def generate_training_data(L: List[float], mlp: SimpleMLP, dataset_size: int) ->
         target = trapezoidal_integral(L, L1)
         train_targets.append(target)
         
-        if (i+1) % 50 == 0:
+        if (i+1) % 40 == 0:
             logger.info(f"Generated {i+1}/{dataset_size} training samples")
     
     logger.info("Training data generation completed")
@@ -402,11 +402,11 @@ def main() -> None:
     logger.info(f"Generated {len(L)} uniform samples between 0 and 1")
     
     # Initialize models
-    mlp = SimpleMLP(hidden_size=60)
-    mlp2 = TrainableMLP(input_size=len(L), hidden_size=3)
+    mlp = SimpleMLP(hidden_size1=48, hidden_size2=24, hidden_size3=16)
+    mlp2 = TrainableMLP(input_size=len(L), hidden_size1=4)
     
     # Generate training data
-    dataset_size = 200
+    dataset_size = 280
     train_data, train_targets = generate_training_data(L, mlp, dataset_size)
     
     # Perform k-fold cross validation
@@ -415,7 +415,7 @@ def main() -> None:
         train_data,
         train_targets,
         k=4,
-        epochs=100,
+        epochs=160,
         batch_size=20,
         lr=0.1
     )
@@ -432,28 +432,30 @@ def main() -> None:
     train_loss, _ = mlp2.train_model(
         train_data,
         train_targets,
-        epochs=100,
+        epochs=160,
         batch_size=20,
         lr=0.1
     )
     
-    # Final evaluation
+    # Final Tests --> building the 2 test data
     L1: List[float] = []
-    mlp.reinitialize_weights()
+    mlp.reinitialize_weights() #changing the function computed by the MLP1
     for el in L:
         output = mlp.forward(el)
         L1.append(output.item() if isinstance(output, torch.Tensor) else output)
     
     L2: List[float] = []
-    mlp.reinitialize_weights()
+    mlp.reinitialize_weights() #changing the function computed by the MLP1
     for el in L:
         output = mlp.forward(el)
         L2.append(output.item() if isinstance(output, torch.Tensor) else output)
+
+    #Evaluation of the model on the 2 test data
     target1 = trapezoidal_integral(L, L1)
     final_loss1, estimated_integral1 = mlp2.validate_model([L1], [target1])
-
     target2 = trapezoidal_integral(L, L2)
     final_loss2, estimated_integral2 = mlp2.validate_model([L2], [target2])
+
     logger.info(f"Final evaluation on test data 1 - Numeric integral: {target1} - Estimated integral: {estimated_integral1.item()} - Loss: {final_loss1:.6f}")
     logger.info(f"Final evaluation on test data 2 - Numeric integral: {target2} - Estimated integral: {estimated_integral2.item()} - Loss: {final_loss2:.6f}")
 

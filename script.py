@@ -1,3 +1,4 @@
+from pyexpat import model
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,15 +18,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class LogHybridLoss(nn.Module):
+    def __init__(self, alpha=0.6, epsilon=1e-6):
+        super(LogHybridLoss, self).__init__()
+        self.alpha = alpha
+        self.epsilon = epsilon
+    
+    def forward(self, y_pred, y_true):
+        # MSE classico
+        mse = torch.mean((y_pred - y_true) ** 2)
+
+        # Log-relative error
+        log_y_pred = torch.log1p(torch.abs(y_pred) + self.epsilon)
+        log_y_true = torch.log1p(torch.abs(y_true) + self.epsilon)
+        log_rel_mse = torch.mean((log_y_pred - log_y_true) ** 2)
+
+        return self.alpha * mse + (1 - self.alpha) * log_rel_mse
+
 class SimpleMLP(nn.Module):
-    def __init__(self, hidden_size1: int, hidden_size2: int, hidden_size3: int) -> None:
+    def __init__(self, hidden_size1: int, hidden_size2: int) -> None:
         super(SimpleMLP, self).__init__()
         self.hidden1 = nn.Linear(1, hidden_size1)
         self.hidden2 = nn.Linear(hidden_size1, hidden_size2)
-        self.hidden3 = nn.Linear(hidden_size2, hidden_size3)
-        self.output = nn.Linear(hidden_size3, 1)
+        self.output = nn.Linear(hidden_size2, 1)
         self.reinitialize_weights()
-        logger.info(f"Initialized SimpleMLP with hidden_size1={hidden_size1}, hidden_size2={hidden_size2}, hidden_size3={hidden_size3}")
+        logger.info(f"Initialized SimpleMLP with hidden_size1={hidden_size1}, hidden_size2={hidden_size2}")
 
     def forward(self, x: Union[float, int, List[float], torch.Tensor]) -> Union[float, torch.Tensor]:
         if isinstance(x, (int, float)):
@@ -35,21 +52,22 @@ class SimpleMLP(nn.Module):
 
         x = torch.relu(self.hidden1(x))
         x = torch.relu(self.hidden2(x))
-        x = torch.relu(self.hidden3(x))
         x = torch.sigmoid(self.output(x))
         return x.item() if x.numel() == 1 else x
 
     def reinitialize_weights(self) -> None:
-        for name, layer in [('hidden1', self.hidden1), ('output', self.output)]:
-            nn.init.normal_(layer.weight, mean=0, std=1)
+        for name, layer in [('hidden1', self.hidden1), ('hidden2', self.hidden2), ('output', self.output)]:
+            #nn.init.normal_(layer.weight, mean=0, std=1)
+            nn.init.uniform_(layer.weight, -1.0, 1.0)
             nn.init.uniform_(layer.bias, -1.0, 1.0)
             logger.debug(f"Reinitialized weights for layer {name}")
 
 class TrainableMLP(nn.Module):
-    def __init__(self, input_size: int, hidden_size1: int) -> None:
+    def __init__(self, input_size: int, hidden_size1: int, hidden_size2: int) -> None:
         super(TrainableMLP, self).__init__()
         self.hidden1 = nn.Linear(input_size, hidden_size1)
-        self.output = nn.Linear(hidden_size1, 1)
+        self.hidden2 = nn.Linear(hidden_size1, hidden_size2)
+        self.output = nn.Linear(hidden_size2, 1)
         self.reinitialize_weights()
         logger.info(f"Initialized TrainableMLP with input_size={input_size}, hidden_size1={hidden_size1}")
 
@@ -59,7 +77,8 @@ class TrainableMLP(nn.Module):
         elif isinstance(x, (int, float)):
             x = torch.tensor([[x]], dtype=torch.float32)
         x = torch.sigmoid(self.hidden1(x))
-        x = self.output(x)  # Removed activation for regression
+        x = torch.sigmoid(self.hidden2(x))
+        x = self.output(x)
         return x
 
     def reinitialize_weights(self, seed: Optional[int] = None) -> None:
@@ -72,7 +91,7 @@ class TrainableMLP(nn.Module):
             torch.manual_seed(seed)
             
             try:
-                for name, layer in [('hidden1', self.hidden1), ('output', self.output)]:
+                for name, layer in [('hidden1', self.hidden1), ('hidden2', self.hidden2), ('output', self.output)]:
                     nn.init.uniform_(layer.weight, -1.0, 1.0)
                     nn.init.uniform_(layer.bias, -1.0, 1.0)
                     logger.debug(f"Reinitialized weights for layer {name} (seed={seed})")
@@ -81,7 +100,7 @@ class TrainableMLP(nn.Module):
                 torch.random.set_rng_state(original_state)
         else:
             # No seed provided - just do normal initialization
-            for name, layer in [('hidden1', self.hidden1), ('output', self.output)]:
+            for name, layer in [('hidden1', self.hidden1), ('hidden2', self.hidden2), ('output', self.output)]:
                 nn.init.uniform_(layer.weight, -1.0, 1.0)
                 nn.init.uniform_(layer.bias, -1.0, 1.0)
 
@@ -100,8 +119,8 @@ class TrainableMLP(nn.Module):
         Train the model with optional validation at each epoch.
         Returns training and validation loss histories.
         """
-        criterion = nn.MSELoss()
-        optimizer = torch.optim.SGD(self.parameters(), lr=lr)
+        criterion = LogHybridLoss()
+        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
         inputs_tensor = torch.tensor(inputs, dtype=torch.float32)
         targets_tensor = torch.tensor(targets, dtype=torch.float32).view(-1, 1)
@@ -119,6 +138,8 @@ class TrainableMLP(nn.Module):
         if verbose:
             logger.info(f"Starting training for {epochs} epochs with batch_size={batch_size}, lr={lr}")
         
+        best_val_loss = float('inf')
+
         for epoch in range(epochs):
             self.train()
             permutation = torch.randperm(dataset_size)
@@ -144,6 +165,11 @@ class TrainableMLP(nn.Module):
             if val_inputs is not None and val_targets is not None:
                 val_loss, est_integral = self.validate_model(val_inputs, val_targets)
                 val_loss_history.append(val_loss)
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    torch.save(self.state_dict(), "weights_TrainableMLP.pth")
+                    if verbose:
+                        logger.info(f"New best validation loss: {best_val_loss:.6f} at epoch {epoch+1}")
                 if verbose and (epoch+1) % 10 == 0:
                     logger.info(
                         f"Epoch {epoch+1}/{epochs} - "
@@ -402,11 +428,11 @@ def main() -> None:
     logger.info(f"Generated {len(L)} uniform samples between 0 and 1")
     
     # Initialize models
-    mlp = SimpleMLP(hidden_size1=48, hidden_size2=24, hidden_size3=16)
-    mlp2 = TrainableMLP(input_size=len(L), hidden_size1=4)
+    mlp = SimpleMLP(hidden_size1=48, hidden_size2=24)
+    mlp2 = TrainableMLP(input_size=len(L), hidden_size1=16, hidden_size2=8)
     
     # Generate training data
-    dataset_size = 280
+    dataset_size = 600
     train_data, train_targets = generate_training_data(L, mlp, dataset_size)
     
     # Perform k-fold cross validation
@@ -415,9 +441,9 @@ def main() -> None:
         train_data,
         train_targets,
         k=4,
-        epochs=160,
+        epochs=200,
         batch_size=20,
-        lr=0.1
+        lr=0.005
     )
     
     # Plot all fold performances - now shows both individual and average
@@ -426,43 +452,54 @@ def main() -> None:
     # Additional visualization: Each fold in its own subplot
     plot_individual_folds(cv_results['fold_results'])
     
+    #Generation of validation data
+    logger.info("Generating validation data...")
+    val_inputs = []
+    val_targets = []
+    n_val = 50
+    for t in range(n_val):
+        L1: List[float] = []
+        mlp.reinitialize_weights() #changing the function computed by the MLP1
+        for el in L:
+            output = mlp.forward(el)
+            L1.append(output.item() if isinstance(output, torch.Tensor) else output)
+        target = trapezoidal_integral(L, L1)
+        val_inputs.append(L1)
+        val_targets.append(target)
+    
     # Train final model on all data
     logger.info("Training final model on full dataset...")
     mlp2.reinitialize_weights()
     train_loss, _ = mlp2.train_model(
         train_data,
         train_targets,
-        epochs=160,
-        batch_size=20,
-        lr=0.1
+        val_inputs=val_inputs,
+        val_targets=val_targets,
+        epochs=500,
+        batch_size=10,
+        lr=0.005,
+        verbose=True
     )
-    
-    # Final Tests --> building the 2 test data
-    L1: List[float] = []
-    mlp.reinitialize_weights() #changing the function computed by the MLP1
-    for el in L:
-        output = mlp.forward(el)
-        L1.append(output.item() if isinstance(output, torch.Tensor) else output)
-    
-    L2: List[float] = []
-    mlp.reinitialize_weights() #changing the function computed by the MLP1
-    for el in L:
-        output = mlp.forward(el)
-        L2.append(output.item() if isinstance(output, torch.Tensor) else output)
 
-    #Evaluation of the model on the 2 test data
-    target1 = trapezoidal_integral(L, L1)
-    final_loss1, estimated_integral1 = mlp2.validate_model([L1], [target1])
-    target2 = trapezoidal_integral(L, L2)
-    final_loss2, estimated_integral2 = mlp2.validate_model([L2], [target2])
+    #Loading the best found model for TrainableMLP
+    mlp2.load_state_dict(torch.load("weights_TrainableMLP.pth", weights_only=True))  
 
-    logger.info(f"Final evaluation on test data 1 - Numeric integral: {target1} - Estimated integral: {estimated_integral1.item()} - Loss: {final_loss1:.6f}")
-    logger.info(f"Final evaluation on test data 2 - Numeric integral: {target2} - Estimated integral: {estimated_integral2.item()} - Loss: {final_loss2:.6f}")
-
+    # Final Tests --> building the 22 test data
+    # Evaluation of the model on the 22 test data
     # Plot results
-    plot_function(L, L1, title="MLP1 Output Function")
-    plot_function(L, L2, title="MLP2 Output Function")
-    
+    n_test = 22
+    for t in range(n_test):
+        L1: List[float] = []
+        mlp.reinitialize_weights() #changing the function computed by the MLP1
+        for el in L:
+            output = mlp.forward(el)
+            L1.append(output.item() if isinstance(output, torch.Tensor) else output)
+        target = trapezoidal_integral(L, L1)
+        final_loss, estimated_integral = mlp2.validate_model([L1], [target])
+        logger.info(f"Test {t+1}/{n_test} - Numeric integral: {target} - Estimated integral: {estimated_integral.item()} - Loss: {final_loss:.6f}")
+        if t>16:
+            plot_function(L, L1, title="MLP1 Output Function")
+
 
 if __name__ == "__main__":
     main()
